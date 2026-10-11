@@ -53,6 +53,17 @@ _MODE_RUNTIME_KIND: dict[str, str] = {
 }
 SUPPORTED_RUNTIME_ENGINE = "sglang"
 
+# Top-level manifest sections the checker dereferences. An absent key keeps
+# the per-field "missing" verdicts; a present non-object value fails closed.
+MANIFEST_OBJECT_SECTIONS: tuple[str, ...] = (
+    "round",
+    "model",
+    "runtime",
+    "request",
+    "code",
+    "canonicalization",
+)
+
 
 @dataclass(frozen=True)
 class CompatibilityResult:
@@ -97,6 +108,10 @@ def check_compatibility(
     schema_failure = _check_schema_version(manifest)
     if schema_failure is not None:
         return CompatibilityResult(passed=False, failure=schema_failure)
+
+    section_failure = _check_section_shapes(manifest)
+    if section_failure is not None:
+        return CompatibilityResult(passed=False, failure=section_failure)
 
     round_section = manifest.get("round", {})
     round_kind = round_section.get("kind")
@@ -174,6 +189,19 @@ def _check_schema_version(manifest: dict[str, Any]) -> Failure | None:
                 f"{sorted(SUPPORTED_MANIFEST_SCHEMA_VERSIONS)}"
             ),
         )
+    return None
+
+
+def _check_section_shapes(manifest: dict[str, Any]) -> Failure | None:
+    for section in MANIFEST_OBJECT_SECTIONS:
+        if section not in manifest:
+            continue
+        value = manifest[section]
+        if not isinstance(value, dict):
+            return _incompatible(
+                section,
+                f"manifest {section} must be an object, got {type(value).__name__}",
+            )
     return None
 
 

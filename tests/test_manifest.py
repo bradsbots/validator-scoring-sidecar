@@ -1,10 +1,12 @@
 """Tests for the manifest compatibility checker."""
 
+import json
 from copy import deepcopy
 from typing import Any
 
 import pytest
 
+from validator_scoring_sidecar.config import load_config
 from validator_scoring_sidecar.failure import FailureCategory
 from validator_scoring_sidecar.manifest import (
     SUPPORTED_MANIFEST_SCHEMA_VERSIONS,
@@ -14,6 +16,11 @@ from validator_scoring_sidecar.manifest import (
     diversity_formula_present,
     score_formula_present,
     selector_parameters,
+)
+from validator_scoring_sidecar.round_metadata import RoundMetadata
+from validator_scoring_sidecar.score import (
+    _outcome_from_compat_failure,
+    _resolve_runtime,
 )
 from validator_scoring_sidecar.scoring import (
     SUPPORTED_DIVERSITY_FORMULA_CONTENT_HASHES,
@@ -770,3 +777,85 @@ def test_diversity_formula_present_keys_on_code_section():
 
     manifest["code"]["diversity_formula"] = _diversity_section(DIVERSITY_FORMULA_HASH)
     assert diversity_formula_present(manifest) is True
+
+
+# ---------------------------------------------------------------------------
+# Non-object top-level sections fail closed
+# ---------------------------------------------------------------------------
+
+TOP_LEVEL_SECTIONS = [
+    "round",
+    "model",
+    "runtime",
+    "request",
+    "code",
+    "canonicalization",
+]
+NON_OBJECT_SECTION_VALUES = [None, [], "text", 0, True]
+
+
+@pytest.mark.parametrize("value", NON_OBJECT_SECTION_VALUES)
+@pytest.mark.parametrize("section", TOP_LEVEL_SECTIONS)
+def test_non_object_manifest_section_fails_closed(section, value):
+    manifest = _manifest()
+    manifest[section] = value
+
+    result = _check(manifest)
+
+    assert result.passed is False
+    assert result.failure.category is FailureCategory.MANIFEST_INCOMPATIBLE
+    assert result.failure.field == section
+    assert section in result.failure.message
+    assert type(value).__name__ in result.failure.message
+
+
+@pytest.mark.parametrize("section", TOP_LEVEL_SECTIONS)
+def test_absent_manifest_section_keeps_field_level_verdict(section):
+    manifest = _manifest()
+    del manifest[section]
+
+    result = _check(manifest)
+
+    assert result.passed is False
+    assert result.failure.field != section
+    assert result.failure.field.startswith(f"{section}.")
+
+
+@pytest.mark.parametrize("with_provisioner", [False, True])
+@pytest.mark.parametrize("section", TOP_LEVEL_SECTIONS)
+def test_non_object_manifest_section_flows_through_score_path(
+    tmp_path, section, with_provisioner
+):
+    config = load_config(
+        base_url="https://scoring.example.org",
+        data_dir=tmp_path,
+        network="testnet",
+        environ={},
+    )
+    record_path = tmp_path / "runtime" / "deployment_record.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps(_deployment()), encoding="utf-8")
+    metadata = RoundMetadata(
+        round_id=1,
+        round_number=DEFAULT_ROUND_NUMBER,
+        status="INPUT_FROZEN",
+        input_package_cid="QmInput",
+        input_package_hash="0" * 64,
+        input_frozen_at="2026-05-18T00:00:00+00:00",
+        final_bundle_cid=None,
+    )
+    manifest = _manifest()
+    manifest[section] = None
+
+    def _never_provision(manifest):
+        raise AssertionError("provisioning must not run on this path")
+
+    _, compat = _resolve_runtime(
+        config, manifest, metadata, _never_provision if with_provisioner else None
+    )
+    outcome = _outcome_from_compat_failure(compat.failure)
+
+    assert compat.passed is False
+    assert compat.failure.category is FailureCategory.MANIFEST_INCOMPATIBLE
+    assert outcome.error_category == FailureCategory.MANIFEST_INCOMPATIBLE.value
+    assert outcome.error_details["field"] == section
