@@ -8,14 +8,15 @@ import pytest
 from validator_scoring_sidecar.scoring import SUPPORTED_SELECTOR_CONTENT_HASHES
 from validator_scoring_sidecar.scoring import (
     selector,
+    selector_max_size_guard,
     selector_minimum_cap,
     selector_minimum_cap_tie_break,
     selector_tie_break,
 )
 from validator_scoring_sidecar.scoring.parser import ScoringResult, ValidatorScore
 from validator_scoring_sidecar.scoring.selector_versions import (
-    COMBINED_SELECTOR_HASH, LEGACY_SELECTOR_HASH, STRICT_SELECTOR_HASH,
-    TIE_BREAK_SELECTOR_HASH,
+    COMBINED_SELECTOR_HASH, LEGACY_SELECTOR_HASH, MAX_SIZE_GUARD_SELECTOR_HASH,
+    STRICT_SELECTOR_HASH, TIE_BREAK_SELECTOR_HASH,
     select_unl_for_hash,
 )
 
@@ -57,6 +58,45 @@ def test_valid_caps_preserve_selection(cap, previous):
     assert (old.unl, old.alternates) == (new.unl, new.alternates)
 
 
+@pytest.mark.parametrize('cap', [0, -1])
+@pytest.mark.parametrize('populated', [False, True])
+@pytest.mark.parametrize('previous', [[], ['OLD']])
+def test_max_size_guard_boundary_is_selected_by_hash(cap, populated, previous):
+    with pytest.raises(ValueError, match=rf'max_size must be at least 1 \(got {cap}\)'):
+        select_unl_for_hash(result(populated), MAX_SIZE_GUARD_SELECTOR_HASH,
+            cutoff=40, max_size=cap, min_gap=5, previous_unl=previous)
+
+
+def test_max_size_guard_replaces_the_issue_40_crash():
+    # dynamic-unl-scoring#40: one surviving incumbent, one challenger, max_size=0.
+    scores = [
+        ValidatorScore(master_key=key, score=score, consensus=score,
+            reliability=score, software=score, diversity=score, identity=score,
+            reasoning='ok')
+        for key, score in [('INC', 60), ('CHL', 70)]
+    ]
+    scored = ScoringResult(validator_scores=scores, network_summary='ok',
+        network_report=None, raw_response='{}', complete=True, errors=[])
+    args = dict(cutoff=40, max_size=0, min_gap=5, previous_unl=['INC'])
+    with pytest.raises(ValueError, match=r'min\(\) (iterable argument|arg) is (an )?empty'):
+        select_unl_for_hash(scored, LEGACY_SELECTOR_HASH, **args)
+    with pytest.raises(ValueError, match=r'max_size must be at least 1 \(got 0\)'):
+        select_unl_for_hash(scored, MAX_SIZE_GUARD_SELECTOR_HASH, **args)
+    one_seat = select_unl_for_hash(scored, MAX_SIZE_GUARD_SELECTOR_HASH, **{**args, 'max_size': 1})
+    assert (one_seat.unl, one_seat.alternates) == (['CHL'], ['INC'])
+    legacy_one_seat = select_unl_for_hash(scored, LEGACY_SELECTOR_HASH, **{**args, 'max_size': 1})
+    assert (one_seat.unl, one_seat.alternates) == (legacy_one_seat.unl, legacy_one_seat.alternates)
+
+
+@pytest.mark.parametrize('cap', [1, 35])
+@pytest.mark.parametrize('previous', [[], ['MASTER'], ['OLD']])
+def test_max_size_guard_preserves_valid_cap_selection(cap, previous):
+    args = dict(cutoff=40, max_size=cap, min_gap=5, previous_unl=previous)
+    old = select_unl_for_hash(result(True), LEGACY_SELECTOR_HASH, **args)
+    new = select_unl_for_hash(result(True), MAX_SIZE_GUARD_SELECTOR_HASH, **args)
+    assert (old.unl, old.alternates) == (new.unl, new.alternates)
+
+
 @pytest.mark.parametrize('unknown', ['', 'unknown', None, []])
 def test_unknown_hash_fails_closed(unknown):
     with pytest.raises(ValueError, match='Unsupported selector'):
@@ -90,9 +130,11 @@ def test_source_provenance_and_runnable_body_parity():
     assert hashlib.sha256(tie_raw).hexdigest() == TIE_BREAK_SELECTOR_HASH
     combined_raw = (source / 'unl_selector_minimum_cap_tie_break.py').read_bytes()
     assert hashlib.sha256(combined_raw).hexdigest() == COMBINED_SELECTOR_HASH
+    guard_raw = (source / 'unl_selector_max_size_guard.py').read_bytes()
+    assert hashlib.sha256(guard_raw).hexdigest() == MAX_SIZE_GUARD_SELECTOR_HASH
     assert SUPPORTED_SELECTOR_CONTENT_HASHES == {
-        COMBINED_SELECTOR_HASH, LEGACY_SELECTOR_HASH, STRICT_SELECTOR_HASH,
-        TIE_BREAK_SELECTOR_HASH,
+        COMBINED_SELECTOR_HASH, LEGACY_SELECTOR_HASH, MAX_SIZE_GUARD_SELECTOR_HASH,
+        STRICT_SELECTOR_HASH, TIE_BREAK_SELECTOR_HASH,
     }
     upstream = next(n for n in ast.parse(raw).body if isinstance(n, ast.FunctionDef) and n.name == 'select_unl')
     adapted = next(n for n in ast.parse(Path(selector_minimum_cap.__file__).read_text()).body if isinstance(n, ast.FunctionDef) and n.name == 'select_unl')
@@ -105,3 +147,11 @@ def test_source_provenance_and_runnable_body_parity():
     combined_upstream = next(n for n in ast.parse(combined_raw).body if isinstance(n, ast.FunctionDef) and n.name == 'select_unl')
     combined_adapted = next(n for n in ast.parse(Path(selector_minimum_cap_tie_break.__file__).read_text()).body if isinstance(n, ast.FunctionDef) and n.name == 'select_unl')
     assert [ast.dump(n) for n in combined_upstream.body[4:]] == [ast.dump(n) for n in combined_adapted.body[1:]]
+    guard_upstream = next(n for n in ast.parse(guard_raw).body if isinstance(n, ast.FunctionDef) and n.name == 'select_unl')
+    guard_adapted = next(n for n in ast.parse(Path(selector_max_size_guard.__file__).read_text()).body if isinstance(n, ast.FunctionDef) and n.name == 'select_unl')
+    assert [ast.dump(n) for n in guard_upstream.body[4:]] == [ast.dump(n) for n in guard_adapted.body[1:]]
+    # The guard version is the historical selector plus the max_size guard and nothing else.
+    legacy_raw = (source / 'unl_selector.py').read_bytes()
+    legacy_upstream = next(n for n in ast.parse(legacy_raw).body if isinstance(n, ast.FunctionDef) and n.name == 'select_unl')
+    assert isinstance(guard_upstream.body[4], ast.If)
+    assert [ast.dump(n) for n in guard_upstream.body[5:]] == [ast.dump(n) for n in legacy_upstream.body[4:]]

@@ -41,6 +41,7 @@ from validator_scoring_sidecar.scoring import (
 from validator_scoring_sidecar.scoring.selector_versions import (
     COMBINED_SELECTOR_HASH,
     LEGACY_SELECTOR_HASH,
+    MAX_SIZE_GUARD_SELECTOR_HASH,
     STRICT_SELECTOR_HASH,
     TIE_BREAK_SELECTOR_HASH,
 )
@@ -429,6 +430,7 @@ def _diversity_foundation_hashes(
         STRICT_SELECTOR_HASH,
         TIE_BREAK_SELECTOR_HASH,
         COMBINED_SELECTOR_HASH,
+        MAX_SIZE_GUARD_SELECTOR_HASH,
     ],
 )
 def test_full_score_diversity_round_selects_over_computed_diversity(
@@ -1180,12 +1182,12 @@ def test_score_round_wires_persisted_call_id_into_default_factory(
 
 
 @pytest.mark.parametrize('expected', [
-    'legacy', 'minimum_cap', 'tie_break', 'combined',
+    'legacy', 'minimum_cap', 'tie_break', 'combined', 'max_size_guard',
 ])
 def test_full_score_threads_selector_hash(tmp_path, monkeypatch, expected):
     from validator_scoring_sidecar.scoring.selector_versions import (
-        COMBINED_SELECTOR_HASH, LEGACY_SELECTOR_HASH, STRICT_SELECTOR_HASH,
-        TIE_BREAK_SELECTOR_HASH, SELECTORS,
+        COMBINED_SELECTOR_HASH, LEGACY_SELECTOR_HASH, MAX_SIZE_GUARD_SELECTOR_HASH,
+        STRICT_SELECTOR_HASH, TIE_BREAK_SELECTOR_HASH, SELECTORS,
     )
     config = _setup(tmp_path)
     manifest = _manifest()
@@ -1194,6 +1196,7 @@ def test_full_score_threads_selector_hash(tmp_path, monkeypatch, expected):
         'minimum_cap': STRICT_SELECTOR_HASH,
         'tie_break': TIE_BREAK_SELECTOR_HASH,
         'combined': COMBINED_SELECTOR_HASH,
+        'max_size_guard': MAX_SIZE_GUARD_SELECTOR_HASH,
     }[expected]
     manifest['code']['selector']['content_sha256'] = expected_hash
     manifest['code']['selector']['parameters'] = {
