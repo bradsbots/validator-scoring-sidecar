@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Mapping
@@ -334,8 +335,8 @@ def _parse_timeout(value: str) -> float:
         timeout = float(value)
     except ValueError as exc:
         raise ConfigError("timeout_seconds must be a number") from exc
-    if timeout <= 0:
-        raise ConfigError("timeout_seconds must be greater than zero")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ConfigError("timeout_seconds must be a finite number greater than zero")
     return timeout
 
 
@@ -344,8 +345,10 @@ def _parse_inference_timeout(value: str) -> float:
         timeout = float(value)
     except ValueError as exc:
         raise ConfigError("inference_timeout_seconds must be a number") from exc
-    if timeout <= 0:
-        raise ConfigError("inference_timeout_seconds must be greater than zero")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ConfigError(
+            "inference_timeout_seconds must be a finite number greater than zero"
+        )
     return timeout
 
 
@@ -369,6 +372,8 @@ def _parse_chain_poll_interval(value: str) -> float:
         interval = float(value)
     except ValueError as exc:
         raise ConfigError("chain_poll_interval_seconds must be a number") from exc
-    if interval <= 0:
-        raise ConfigError("chain_poll_interval_seconds must be greater than zero")
+    if not math.isfinite(interval) or interval <= 0:
+        raise ConfigError(
+            "chain_poll_interval_seconds must be a finite number greater than zero"
+        )
     return interval

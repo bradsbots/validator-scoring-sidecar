@@ -269,3 +269,43 @@ def test_modal_scaledown_minutes_defaults_and_reads_env():
 def test_modal_scaledown_minutes_rejects_invalid_value(value):
     with pytest.raises(ConfigError, match="modal_scaledown_minutes"):
         load_config(environ={"POSTFIAT_SIDECAR_MODAL_SCALEDOWN_MINUTES": value})
+
+
+# ``float("nan")`` compares False against everything and ``inf`` is greater
+# than zero, so a ``<= 0`` guard alone let both through; so did overflowing
+# literals such as "1e309". A non-finite timeout reaches httpx unchanged and a
+# non-finite poll interval makes ``time.sleep`` raise at the first poll.
+FLOAT_SETTINGS = [
+    ("timeout_seconds", "POSTFIAT_SIDECAR_TIMEOUT_SECONDS"),
+    ("inference_timeout_seconds", "POSTFIAT_SIDECAR_INFERENCE_TIMEOUT_SECONDS"),
+    ("chain_poll_interval_seconds", "POSTFIAT_SIDECAR_CHAIN_POLL_INTERVAL_SECONDS"),
+]
+
+
+@pytest.mark.parametrize("value", ["nan", "NaN", "inf", "Infinity", "-inf", "1e309"])
+@pytest.mark.parametrize("setting,env_name", FLOAT_SETTINGS)
+def test_float_settings_reject_non_finite_values(setting, env_name, value):
+    with pytest.raises(ConfigError, match=f"{setting} must be a finite number"):
+        load_config(**{setting: value}, environ={})
+    with pytest.raises(ConfigError, match=f"{setting} must be a finite number"):
+        load_config(environ={env_name: value})
+
+
+def test_float_settings_keep_finite_values_and_defaults():
+    defaults = load_config(environ={})
+    assert (
+        defaults.timeout_seconds,
+        defaults.inference_timeout_seconds,
+        defaults.chain_poll_interval_seconds,
+    ) == (30.0, 180.0, 60.0)
+    config = load_config(
+        timeout_seconds="1e3",
+        inference_timeout_seconds=0.5,
+        chain_poll_interval_seconds="2.5",
+        environ={},
+    )
+    assert (
+        config.timeout_seconds,
+        config.inference_timeout_seconds,
+        config.chain_poll_interval_seconds,
+    ) == (1000.0, 0.5, 2.5)
