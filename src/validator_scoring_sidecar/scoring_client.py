@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 from validator_scoring_sidecar.config import SidecarConfig
+
+# Largest response body accepted from the scoring service or an IPFS gateway.
+# Measured 2026-10-12 on testnet rounds 24-26: the largest input-package or
+# final-bundle file was inputs/model_request.json at 55,997 bytes (round 25),
+# so 32 MiB leaves several hundred times headroom while still bounding memory.
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+
 
 class ScoringClientError(RuntimeError):
     """Base error for scoring service client failures."""
@@ -186,21 +194,21 @@ class ScoringClient:
         service_name: str,
     ) -> dict[str, Any] | list[Any]:
         try:
-            response = self._http.get(url)
+            with self._http.stream("GET", url) as response:
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise ScoringHTTPError(
+                        response.status_code,
+                        url,
+                        service_name=service_name,
+                    )
+                body = _read_bounded_body(response, url, service_name=service_name)
         except httpx.RequestError as exc:
             raise ScoringNetworkError(
                 f"Could not reach {service_name.lower()} at {url}: {exc}"
             ) from exc
 
-        if response.status_code < 200 or response.status_code >= 300:
-            raise ScoringHTTPError(
-                response.status_code,
-                url,
-                service_name=service_name,
-            )
-
         try:
-            payload = response.json()
+            payload = json.loads(body)
         except ValueError as exc:
             raise ScoringResponseError(
                 f"{service_name} returned invalid JSON for {url}"
@@ -211,3 +219,40 @@ class ScoringClient:
                 f"{service_name} returned a non-JSON-object/array body for {url}"
             )
         return payload
+
+
+def _read_bounded_body(
+    response: httpx.Response,
+    url: str,
+    *,
+    service_name: str,
+) -> bytes:
+    """Read a streamed body, refusing it once it exceeds MAX_RESPONSE_BYTES."""
+
+    cap = MAX_RESPONSE_BYTES
+
+    declared = response.headers.get("Content-Length")
+    if declared is not None:
+        try:
+            declared_length = int(declared)
+        except ValueError:
+            declared_length = None
+        if declared_length is not None and declared_length > cap:
+            raise _response_too_large(service_name, url, cap)
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        total += len(chunk)
+        if total > cap:
+            # Drop the partial body now: the traceback keeps this frame alive.
+            chunks.clear()
+            raise _response_too_large(service_name, url, cap)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _response_too_large(service_name: str, url: str, cap: int) -> ScoringResponseError:
+    return ScoringResponseError(
+        f"{service_name} response for {url} exceeds {cap} bytes"
+    )
