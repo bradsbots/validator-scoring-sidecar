@@ -101,3 +101,57 @@ def test_round_metadata_rejects_non_positive_identifiers(field):
             _payload(**{field: 0}),
             requested_round_id=123,
         )
+
+
+def test_round_metadata_rejects_id_other_than_requested_round_id():
+    with pytest.raises(
+        RoundMetadataError,
+        match="round metadata id 7 does not match requested round id 5",
+    ):
+        RoundMetadata.from_api_payload(_payload(id=7), requested_round_id=5)
+
+
+def test_round_metadata_rejects_id_equal_to_round_number_but_not_requested():
+    with pytest.raises(RoundMetadataError, match="requested round id 123"):
+        RoundMetadata.from_api_payload(
+            _payload(id=456, round_number=456),
+            requested_round_id=123,
+        )
+
+
+def test_round_metadata_reports_id_mismatch_before_missing_frozen_input():
+    with pytest.raises(RoundMetadataError, match="does not match") as exc_info:
+        RoundMetadata.from_api_payload(
+            _payload(id=7, input_package_cid=None),
+            requested_round_id=5,
+        )
+
+    assert not isinstance(exc_info.value, MissingFrozenInputMetadata)
+
+
+@pytest.mark.parametrize("requested_round_id", [True, 1.0, "1"])
+def test_round_metadata_rejects_non_int_requested_round_id(requested_round_id):
+    with pytest.raises(RoundMetadataError, match="does not match"):
+        RoundMetadata.from_api_payload(
+            _payload(id=1),
+            requested_round_id=requested_round_id,
+        )
+
+
+@pytest.mark.parametrize("payload_id", [True, "123", 123.0, None])
+def test_round_metadata_rejects_malformed_id_before_comparing(payload_id):
+    with pytest.raises(RoundMetadataError, match="id must be an integer"):
+        RoundMetadata.from_api_payload(
+            _payload(id=payload_id),
+            requested_round_id=123,
+        )
+
+
+def test_round_metadata_accepts_id_equal_to_requested_round_id():
+    huge = int("9" * 400)
+    metadata = RoundMetadata.from_api_payload(
+        _payload(id=huge),
+        requested_round_id=huge,
+    )
+
+    assert metadata.round_id == huge

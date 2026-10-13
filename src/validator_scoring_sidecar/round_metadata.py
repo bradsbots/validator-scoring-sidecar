@@ -53,6 +53,13 @@ class RoundMetadata:
         """Parse and validate scoring service round metadata."""
 
         round_id = _require_positive_int(payload, "id")
+        # Bind the record to the request: a by-id fetch must not accept another
+        # round. type() excludes bool, which would otherwise compare equal to 1.
+        if type(requested_round_id) is not int or round_id != requested_round_id:
+            raise RoundMetadataError(
+                f"round metadata id {round_id} does not match requested round id "
+                f"{requested_round_id!r}"
+            )
         round_number = _require_positive_int(payload, "round_number")
         status = _require_string(payload, "status")
         frozen_input = _required_frozen_input_fields(
