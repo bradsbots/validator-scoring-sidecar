@@ -78,6 +78,10 @@ case "$interval" in
         exit 2
         ;;
 esac
+if [ "$interval" -le 0 ]; then
+    log "loop interval must be a positive integer, got '${interval}'"
+    exit 2
+fi
 
 case "$command_timeout" in
     ''|*[!0-9]*)
