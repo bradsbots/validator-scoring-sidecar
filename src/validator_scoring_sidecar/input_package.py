@@ -21,6 +21,7 @@ from validator_scoring_sidecar.scoring_client import (
 BUNDLE_FILE_PATH = "bundle.json"
 PACKAGES_DIR_NAME = "packages"
 SIDECAR_METADATA_FILE_PATH = ".sidecar/package.json"
+SIDECAR_RESERVED_DIR = PurePosixPath(SIDECAR_METADATA_FILE_PATH).parts[0]
 SIDECAR_METADATA_VERSION = 1
 SOURCE_AUTO = "auto"
 SOURCE_CACHE = "cache"
@@ -289,6 +290,10 @@ def _parse_bundle(
         if file_path == BUNDLE_FILE_PATH:
             raise InputPackageVerificationError(
                 "bundle.json must not be listed in file_hashes"
+            )
+        if PurePosixPath(file_path).parts[0] == SIDECAR_RESERVED_DIR:
+            raise InputPackageVerificationError(
+                "bundle.json must not list paths under the reserved .sidecar/ directory"
             )
         if not isinstance(raw_hash, str):
             raise InputPackageVerificationError(

@@ -236,6 +236,101 @@ def test_fetch_input_package_rejects_cross_network_package(tmp_path):
     assert not package_cache_path(config, package_hash).exists()
 
 
+def _package_files_with_extra(extra_path):
+    bundle, files, _ = _package_files()
+    files = {**files, extra_path: {"note": "package-supplied file"}}
+    bundle["file_hashes"] = {
+        path: canonical_json_hash(content) for path, content in sorted(files.items())
+    }
+    return bundle, files, canonical_json_hash(bundle)
+
+
+def _serving_handler(bundle, files, requested_paths, path_for=_https_path):
+    def handler(request):
+        requested_paths.append(request.url.path)
+        if request.url.path == path_for("bundle.json"):
+            return httpx.Response(200, json=bundle)
+        for file_path, content in files.items():
+            if request.url.path == path_for(file_path):
+                return httpx.Response(200, json=content)
+        return httpx.Response(404)
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "reserved_path",
+    [SIDECAR_METADATA_FILE_PATH, ".sidecar/other.json", ".sidecar"],
+)
+def test_fetch_input_package_rejects_reserved_sidecar_paths(tmp_path, reserved_path):
+    bundle, files, package_hash = _package_files_with_extra(reserved_path)
+    metadata = _metadata(package_hash)
+    config = _config(tmp_path)
+    requested_paths = []
+    handler = _serving_handler(bundle, files, requested_paths)
+
+    with pytest.raises(InputPackageVerificationError, match="reserved .sidecar/"):
+        fetch_input_package(metadata, config, _client(config, handler), source="https")
+
+    assert requested_paths == [_https_path("bundle.json")]
+    cache_path = package_cache_path(config, package_hash)
+    assert not cache_path.exists()
+    assert not cache_path.parent.exists()
+
+
+def test_fetch_input_package_auto_rejects_reserved_sidecar_path_from_both_sources(
+    tmp_path,
+):
+    bundle, files, package_hash = _package_files_with_extra(SIDECAR_METADATA_FILE_PATH)
+    metadata = _metadata(package_hash)
+    config = _config(tmp_path)
+    requested_paths = []
+
+    def handler(request):
+        on_https = request.url.host == "scoring.example.org"
+        path_for = _https_path if on_https else _ipfs_path
+        return _serving_handler(bundle, files, requested_paths, path_for)(request)
+
+    with pytest.raises(
+        InputPackageVerificationError,
+        match=r"https: .*reserved \.sidecar/.*; ipfs: .*reserved \.sidecar/",
+    ):
+        fetch_input_package(metadata, config, _client(config, handler))
+
+    assert requested_paths == [_https_path("bundle.json"), _ipfs_path("bundle.json")]
+    assert not package_cache_path(config, package_hash).parent.exists()
+
+
+@pytest.mark.parametrize(
+    "extra_path",
+    ["sidecar/package.json", ".sidecarx/y.json", "inputs/.sidecar/package.json"],
+)
+def test_fetch_input_package_accepts_sidecar_lookalike_paths(tmp_path, extra_path):
+    bundle, files, package_hash = _package_files_with_extra(extra_path)
+    metadata = _metadata(package_hash)
+    config = _config(tmp_path)
+    handler = _serving_handler(bundle, files, [])
+
+    result = fetch_input_package(
+        metadata, config, _client(config, handler), source="https"
+    )
+
+    assert result.source == "https"
+    assert result.verified_file_count == len(files)
+    assert (result.local_path / extra_path).is_file()
+
+    def failing_handler(request):
+        raise AssertionError("cached package should not trigger HTTP requests")
+
+    cached = fetch_input_package(
+        metadata, config, _client(config, failing_handler), source="https"
+    )
+
+    assert cached.source == "cache"
+    assert cached.cached is True
+    assert cached.verified_file_count == len(files)
+
+
 def test_fetch_input_package_failed_download_leaves_no_cache(tmp_path):
     bundle, _, package_hash = _package_files()
     metadata = _metadata(package_hash)
